@@ -1,174 +1,180 @@
 mod utils;
+//TODO: fork rbpf and write rust implementations of necessary libc functions
+pub mod rbpf;
 
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use elf::section::SectionHeader;
+use elf::ElfBytes;
+use elf::endian::LittleEndian;
 use wasm_bindgen::prelude::*;
-
 // When the `wee_alloc` feature is enabled, use `wee_alloc` as the global
 // allocator.
 #[cfg(feature = "wee_alloc")]
 #[global_allocator]
 static ALLOC: wee_alloc::WeeAlloc = wee_alloc::WeeAlloc::INIT;
 
-extern crate clap;
+extern crate web_sys;
+
+// A macro to provide `println!(..)`-style syntax for `console.log` logging.
+macro_rules! log {
+    ( $( $t:tt )* ) => {
+        web_sys::console::log_1(&format!( $( $t )* ).into());
+    }
+}
+
 extern crate elf;
-extern crate rbpf;
 
-use std::process;
-use clap::{Arg, App};
-use std::fs::File;
-use std::io::Read;
+#[derive(Serialize, Deserialize, Debug, Clone)]
+enum Element {
+    Opcode {
+        text: String,
+        op: String,
+        operand1: String,
+        operand2: String,
+        comment: String,
+    },
+    Text {
+        text: String,
+    },
+    Include {
+        text: String,
+        target: String,
+    },
+    Macro {
+        label: String,
+        texts: Vec<String>,
+        text: String,
+    },
+}
 
-fn main() {
-    let matches = App::new("ebpf-disasm")
-        .version("1.0")
-        .author("Jan-Erik Rediger")
-        .about("Output disassembled eBPF read from an ELF file")
-        .arg(Arg::with_name("section")
-             .short("s")
-             .long("section")
-             .value_name("SECTION")
-             .help("Specify a section name")
-             .takes_value(true))
-        .arg(Arg::with_name("INPUT")
-             .help("Sets the input ELF file to use")
-             .required(true)
-             .index(1))
-        .arg(Arg::with_name("hex")
-            .short("h")
-            .long("hex")
-            .help("Dump bytecode in hex"))
-        .arg(Arg::with_name("bytecode")
-            .short("b")
-            .long("bytecode")
-            .help("Dump raw bytecode"))
-        .arg(Arg::with_name("ccode")
-            .short("c")
-            .long("ccode")
-            .help("Only show a C compatible bpf_insn array"))
-        .arg(Arg::with_name("raw")
-            .short("r")
-            .long("raw")
-            .help("Treat input as raw bytes"))
-        .arg(Arg::with_name("list-sections")
-            .short("l")
-            .long("list")
-            .help("List sections of the object file"))
-        .arg(Arg::with_name("number")
-            .short("n")
-            .long("number")
-            .help("Number all output lines"))
-        .get_matches();
+#[derive(Serialize, Deserialize)]
+pub struct Parser {
+    //text: Vec<String>,
+    line: usize,
+}
 
-    let section = matches.value_of("section").unwrap_or(".classifier");
-    let input_file = matches.value_of("INPUT").unwrap();
-    let show_hex = matches.is_present("hex");
-    let show_bytecode = matches.is_present("bytecode");
-    let show_ccode = matches.is_present("ccode");
-    let raw = matches.is_present("raw");
-    let list_sections = matches.is_present("list-sections");
-    let number = matches.is_present("number");
+#[derive(Serialize, Deserialize, Clone)]
+pub struct Node {
+    pub global: String,
+    pub text: String,
+    elements: Vec<Element>,
+    pub next: String,
+    pub next_cond: String,
+    pub calls: Vec<String>,
+}
 
-    let number_formats = show_hex as u8 + show_bytecode as u8 + show_ccode as u8;
+pub type Nodes = HashMap<String, Node>;
 
-    if number_formats > 1 {
-        println!("Can't dump multiple bytecode formats.");
-        process::exit(1);
+impl Parser {
+    pub fn new() -> Self{
+
+
+        return Self {
+            //text: text,
+            line: 0,
+        };
     }
 
-    if raw && list_sections {
-        println!("Can't list sections of raw bytecode.");
-        process::exit(1);
+}
+
+//TODO: maybe add section header data to the struct for easy access
+#[wasm_bindgen]
+pub struct ElfFile {
+    raw_data: Vec<u8>,
+}
+
+impl ElfFile {
+
+}
+
+#[wasm_bindgen]
+impl ElfFile {
+    pub fn new()  -> ElfFile {
+        utils::set_panic_hook();
+        let init = Vec::new();
+        ElfFile { raw_data: init }
     }
 
-    let prog;
-    if raw {
-        let mut file = match File::open(&input_file) {
+    pub fn load(&mut self, data: Vec<u8>){
+        self.raw_data = data;
+    }
+
+    //TODO: print w/o section header
+    pub fn list_sections(&mut self){
+        let data =self.raw_data.as_slice();
+
+        //TODO: handle error on the front end
+        let file =  match ElfBytes::<LittleEndian>::minimal_parse(&data[45..]){
             Ok(f) => f,
-            Err(e) => {
-                println!("Could not read file.");
-                println!("Error: {:?}", e);
-                process::exit(1);
-            }
+            Err(e) =>  panic!("Problem opening the file: {:?}", e),
         };
+        
+        let (shdrs_opt, strtab_opt) = file
+            .section_headers_with_strtab().unwrap();
+        let (shdrs, strtab) = (
+            shdrs_opt.expect("Should have shdrs"),
+            strtab_opt.expect("Should have strtab")
+        );
 
-        let mut buf = Vec::new();
-        match file.read_to_end(&mut buf) {
-            Ok(_) => {},
-            Err(e) => {
-                println!("Could not read file.");
-                println!("Error: {:?}", e);
-                process::exit(1);
-            }
-        }
-        prog = buf;
-    } else {
-        let file = match elf::File::open_path(&input_file) {
-            Ok(f) => f,
-            Err(e) => {
-                println!("Could not read elf file.");
-                println!("Error: {:?}", e);
-                process::exit(1);
-            }
-        };
+        // Parse the shdrs and collect them into a map keyed on their zero-copied name
+        let with_names: HashMap<&str, SectionHeader> = shdrs
+            .iter()
+            .map(|shdr| {
+                (
+                    strtab.get(shdr.sh_name as usize).expect("Failed to get section name"),
+                    shdr,
+                )
+            })
+            .collect();
 
-        if list_sections {
-            println!("Sections of {}:", input_file);
-            for section in file.sections {
-                println!("  {}", section.shdr.name);
-            }
-            process::exit(0);
-        }
-
-        let text_scn = match file.get_section(&section) {
-            Some(s) => s,
-            None => {
-                println!("Failed to lookup '{}' section.", section);
-                process::exit(1);
-            }
-        };
-
-        prog = text_scn.data.clone();
+        log!("{:?}", with_names);
+        
     }
 
-    if show_hex {
-        for insn in prog.chunks(8) {
-            for i in insn {
-                print!("0x{:>02x}, ", i);
-            }
-            println!("");
-        }
-    } else if show_ccode {
-        println!("struct bpf_insn prog[] = {{");
-        for insn in prog.chunks(8) {
-            print!("\t{{ ");
-            print!(".code = 0x{:>02x}, ", insn[0]);
-            print!(".dst_reg = 0x{:>x}, ", insn[1]&0x0f);
-            print!(".src_reg = 0x{:>x}, ", insn[1]>>4);
-            let off = (insn[3] as u16)<<8 | (insn[2] as u16);
-            print!(".off = 0x{:>04x}, ", off);
-            let imm = (insn[7] as u32)<<24 |
-                (insn[6] as u32)<<16 |
-                (insn[5] as u32)<<8 |
-                (insn[4] as u32)<<0;
-            print!(".imm = 0x{:>08x}", imm);
-            println!(" }},");
-        }
-        println!("}};");
+    //TODO: take a section header as an argument
+    pub fn disassemble(&mut self){
+        let data =self.raw_data.as_slice();
 
-    } else if show_bytecode {
-        use std::io::{self, Write};
-        let stdout = io::stdout();
-        let mut handle = stdout.lock();
-        handle.write_all(&prog).expect("Can't dump bytecode to stdout");
-    } else {
+        //TODO: handle error on the front end
+        let file =  match ElfBytes::<LittleEndian>::minimal_parse(&data[45..]){
+            Ok(f) => f,
+            Err(e) =>  panic!("Problem opening the file: {:?}", e),
+        };
+
+        //TODO: turn this into a function for readabilitu and reuasbility.
+        let (shdrs_opt, strtab_opt) = file
+            .section_headers_with_strtab().unwrap();
+        let (shdrs, strtab) = (
+            shdrs_opt.expect("Should have shdrs"),
+            strtab_opt.expect("Should have strtab")
+        );
+
+        //TODO: get section data from hashmap and place it in the function
+        // Parse the shdrs and collect them into a map keyed on their zero-copied name
+        let with_names: HashMap<&str, SectionHeader> = shdrs
+            .iter()
+            .map(|shdr| {
+                (
+                    strtab.get(shdr.sh_name as usize).expect("Failed to get section name"),
+                    shdr,
+                )
+            })
+            .collect();
+
+        let scn = with_names.get(".text").unwrap();
+        
+        let (text_scn, _) = match file.section_data(scn){
+            Ok(f) => f,
+            Err(e) => panic!("Problem reading section: {:?}",e),
+        };
+
         let mut idx = 0;
-        for insn in rbpf::disassembler::to_insn_vec(&prog) {
-            if number {
-                print!("{:>6}:  ", idx);
-            }
-            print!("{}", insn.desc.replace(" ", "\t"));
+        for insn in rbpf::disassembler::to_insn_vec(text_scn){
+            log!("{}", insn.desc.replace(" ", "\t"));
 
             if is_jmp(&insn) {
-                print!("\t(jump to {})", idx + insn.off as isize);
+                log!("\t(jump to {})", idx + insn.off as isize);
             }
 
             if is_wide_op(&insn) {
@@ -181,6 +187,7 @@ fn main() {
     }
 }
 
+//TODO: This likely needs to be wrapped in an Impl block
 // Check if the instruction is a jump
 // (but not a call, tailcall or exit)
 //

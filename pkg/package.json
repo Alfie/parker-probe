@@ -1,0 +1,26 @@
+{
+  "name": "solana-disassembler",
+  "collaborators": [
+    "alfie"
+  ],
+  "version": "0.1.4",
+  "files": [
+    "solana_disassembler_bg.wasm",
+    "solana_disassembler.js",
+    "solana_disassembler.d.ts"
+  ],
+  "module": "solana_disassembler.js",
+  "types": "solana_disassembler.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ],
+  "scripts": {
+    "postinstall": "node ./install.js"
+  },
+  "bin": {
+    "my-binary": "run.js"
+  },
+  "devDependencies": {
+    "binary-install": "^1.1.0"
+  }
+}
